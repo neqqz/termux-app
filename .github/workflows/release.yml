@@ -1,0 +1,65 @@
+name: Release
+
+on:
+  push:
+    branches: [release-master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package_variant: [apt-android-7, apt-android-5]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Accept Android SDK licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      - name: Load signing config
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          LOCAL_PROPERTIES: ${{ secrets.LOCAL_PROPERTIES }}
+        run: |
+          KS="$RUNNER_TEMP/release.keystore"
+          printf '%s' "$KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > "$KS"
+          printf '%s\n' "$LOCAL_PROPERTIES" | tr -d '\r' > "$RUNNER_TEMP/signing.properties"
+          for k in KEYSTORE_PASS ALIAS_NAME ALIAS_PASS; do
+            v=$(grep -m1 "^$k=" "$RUNNER_TEMP/signing.properties" | cut -d= -f2-)
+            [ -n "$v" ] || { echo "::error::$k is missing in LOCAL_PROPERTIES secret"; exit 1; }
+            echo "::add-mask::$v"
+            echo "$k=$v" >> "$GITHUB_ENV"
+          done
+          echo "KEYSTORE_PATH=$KS" >> "$GITHUB_ENV"
+          rm -f "$RUNNER_TEMP/signing.properties"
+
+      - name: Build release APKs
+        env:
+          TERMUX_PACKAGE_VARIANT: ${{ matrix.package_variant }}
+        run: ./gradlew assembleRelease
+
+      - name: Align and sign
+        run: |
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          mkdir out
+          for f in app/build/outputs/apk/release/*.apk; do
+            o="out/$(basename "$f")"
+            "$BT/zipalign" -p -f 4 "$f" "$o"
+            "$BT/apksigner" sign --ks "$KEYSTORE_PATH" --ks-key-alias "$ALIAS_NAME" \
+              --ks-pass env:KEYSTORE_PASS --key-pass env:ALIAS_PASS "$o"
+            "$BT/apksigner" verify "$o"
+          done
+          (cd out && sha256sum *.apk > sha256sums)
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: termux-${{ matrix.package_variant }}
+          path: out/*
+          if-no-files-found: error
