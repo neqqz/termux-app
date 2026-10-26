@@ -40,6 +40,11 @@ jobs:
           echo "KEYSTORE_PATH=$KS" >> "$GITHUB_ENV"
           rm -f "$RUNNER_TEMP/signing.properties"
 
+      - name: Download bootstrap archives
+        env:
+          TERMUX_PACKAGE_VARIANT: ${{ matrix.package_variant }}
+        run: ./gradlew downloadBootstraps
+
       - name: Build release APKs
         env:
           TERMUX_PACKAGE_VARIANT: ${{ matrix.package_variant }}
